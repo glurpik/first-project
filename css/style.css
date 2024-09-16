@@ -1,0 +1,106 @@
+
+*{
+    margin: 0;
+    padding: 0;
+    text-decoration: none;
+}
+header{
+    background: rgb(44, 44, 44);
+}
+.container{
+    max-width: 1100px;
+    margin: 0 auto;
+}
+.container_header{
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 36px 0;
+}
+.header_img{
+    width: 45px;
+    margin-right: 15px;
+}
+.hyper_list{
+    display: flex;
+    list-style: none;
+}
+
+.nav_item{
+ 
+    margin-right: 63px;
+    color: rgb(228, 228, 228);
+font-family: Nico Moji;
+font-size: 18px;
+font-weight: 400;
+line-height: 18px;
+letter-spacing: 0%;
+text-align: left;
+}
+.nav_item:hover{
+    color: blueviolet;
+    transition: .3S;
+    cursor: pointer;
+}
+.logo{
+    display: flex;
+    color: rgb(255, 255, 255);
+font-family: Nico Moji;
+font-size: 10px;
+font-weight: 400;
+line-height: 18px;
+letter-spacing: 0%;
+text-align: left;
+align-items: center;
+}
+.hero-block{
+background: rgb(44, 44, 44);
+}
+.container_hero-block{
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+}
+hero-block_content{
+    max-width: 428px;
+    padding: 43px 0 82px;
+}
+.exit{
+    width: 45px;
+    margin-right: 15px;
+}
+.hero-block_title{
+
+color: rgb(228, 228, 228);
+font-family: Nico Moji;
+font-size: 72px;
+font-weight: 400;
+line-height: 72px;
+letter-spacing: 0%;
+text-align: left;
+margin-bottom: 81px;
+}
+.hero-block_text{
+    color: rgb(228, 228, 228);
+font-family: Roboto;
+font-size: 20px;
+font-weight: 400;
+line-height: 23px;
+letter-spacing: 0%;
+text-align: left;
+margin-bottom: 81px;
+}
+.hero-block_link{
+    border-radius: 6px;
+
+box-shadow: 0px 2px 17px 2px rgba(231, 231, 231, 0.48);
+background: linear-gradient(135.00deg, rgb(247, 204, 252),rgb(255, 255, 255) 78.626%,rgb(241, 241, 241) 100%);
+padding: 13px 31px;
+color: rgb(0, 0, 0);
+font-family: Noto Sans JP;
+font-size: 36px;
+font-weight: 400;
+line-height: 52px;
+letter-spacing: 0%;
+text-align: left;
+}
