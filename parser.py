@@ -1,35 +1,63 @@
-import httpx
-import time
+import asyncio
 import json
+import random
+import re
 from bs4 import BeautifulSoup
 import pandas as pd
 from pathlib import Path
 
 BASE_URL = "https://www.kleinanzeigen.de"
 
-HEADERS = {
-    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
-    "Accept-Language": "de-DE,de;q=0.9,en-US;q=0.8",
-    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-}
+# 16 федеральных земель Германии: (название, slug, location_id)
+GERMAN_STATES = [
+    ("Baden-Württemberg",      "baden-wuerttemberg",      7970),
+    ("Bayern",                  "bayern",                  5510),
+    ("Berlin",                  "berlin",                  3331),
+    ("Brandenburg",             "brandenburg",             7711),
+    ("Bremen",                  "bremen",                     1),
+    ("Hamburg",                 "hamburg",                 9409),
+    ("Hessen",                  "hessen",                  4279),
+    ("Mecklenburg-Vorpommern",  "mecklenburg-vorpommern",    61),
+    ("Niedersachsen",           "niedersachsen",           2428),
+    ("Nordrhein-Westfalen",     "nordrhein-westfalen",      928),
+    ("Rheinland-Pfalz",         "rheinland-pfalz",         4938),
+    ("Saarland",                "saarland",                 285),
+    ("Sachsen",                 "sachsen",                 3799),
+    ("Sachsen-Anhalt",          "sachsen-anhalt",          2165),
+    ("Schleswig-Holstein",      "schleswig-holstein",       408),
+    ("Thüringen",               "thueringen",              3548),
+]
 
 CATEGORIES = {
-    "Вся электроника":        "/s-elektronik/k0",
-    "Авто":                   "/s-autos/k0",
-    "Мото":                   "/s-motorraeder-roller/k0",
-    "Недвижимость":           "/s-immobilien/k0",
-    "Одежда и мода":          "/s-mode-beauty/k0",
-    "Дом и сад":              "/s-haus-garten/k0",
-    "Дети и семья":           "/s-familie-kind-baby/k0",
-    "Хобби и спорт":          "/s-freizeit-hobbys-nachbarschaft/k0",
-    "Животные":               "/s-tiere/k0",
-    "Бизнес и офис":          "/s-buero-gewerbe/k0",
-    "Музыка":                 "/s-musikinstrumente/k0",
-    "Телефоны":               "/s-handys/k0",
-    "Компьютеры":             "/s-computer/k0",
-    "Велосипеды":             "/s-fahrraeder/k0",
-    "Все категории":          "/s-anzeigen/k0",
+    "Вся электроника":        "elektronik",
+    "Авто":                   "autos",
+    "Мото":                   "motorraeder-roller",
+    "Недвижимость":           "immobilien",
+    "Одежда и мода":          "mode-beauty",
+    "Дом и сад":              "haus-garten",
+    "Дети и семья":           "familie-kind-baby",
+    "Хобби и спорт":          "freizeit-hobbys-nachbarschaft",
+    "Животные":               "tiere",
+    "Бизнес и офис":          "buero-gewerbe",
+    "Музыка":                 "musikinstrumente",
+    "Телефоны":               "handys",
+    "Компьютеры":             "computer",
+    "Велосипеды":             "fahrraeder",
+    "Все категории":          "anzeigen",
 }
+
+USER_AGENTS = [
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 14_4) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.4 Safari/605.1.15",
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
+]
+
+
+def build_url(cat_slug: str, state_slug: str, loc_id: int, page: int) -> str:
+    """Строит URL вида /s-{state}/seite:N/{cat}/k0l{loc_id}"""
+    if page == 1:
+        return f"{BASE_URL}/s-{state_slug}/{cat_slug}/k0l{loc_id}"
+    return f"{BASE_URL}/s-{state_slug}/seite:{page}/{cat_slug}/k0l{loc_id}"
 
 
 def get_seller_id(href: str) -> str:
@@ -37,150 +65,164 @@ def get_seller_id(href: str) -> str:
     return parts[-1] if parts else ""
 
 
-def extract_seller_name_from_card(card) -> str:
-    """Извлекает имя продавца из карточки (только PRO продавцы видны в карточке)."""
-    seller_link = card.select_one("a.j-dont-follow-vip:not(.no-decoration)")
-    if seller_link:
-        span = seller_link.select_one("span")
-        name = span.get_text(strip=True) if span else seller_link.get_text(strip=True)
-        if name and name != "PRO":
-            return name
-    return ""
+def parse_cards_from_html(html: str) -> list[dict]:
+    soup = BeautifulSoup(html, "html.parser")
+    results = []
+    for card in soup.select("article.aditem"):
+        ad_id = card.get("data-adid", "")
+        href = card.get("data-href", "")
+
+        title_el = card.select_one("h2 a.ellipsis")
+        title = title_el.get_text(strip=True) if title_el else ""
+
+        price_el = card.select_one("p.aditem-main--middle--price-shipping--price")
+        price = price_el.get_text(strip=True) if price_el else ""
+
+        location_el = card.select_one("div.aditem-main--top--left")
+        location = location_el.get_text(strip=True) if location_el else ""
+
+        date_el = card.select_one("div.aditem-main--top--right")
+        date = date_el.get_text(strip=True) if date_el else ""
+
+        seller_name = ""
+        seller_link = card.select_one("a.j-dont-follow-vip:not(.no-decoration)")
+        if seller_link:
+            span = seller_link.select_one("span")
+            name = span.get_text(strip=True) if span else seller_link.get_text(strip=True)
+            if name and name != "PRO":
+                seller_name = name
+
+        if not title and not price:
+            continue
+
+        results.append({
+            "ad_id": ad_id,
+            "seller_id": get_seller_id(href),
+            "title": title,
+            "price": price,
+            "location": location,
+            "date": date,
+            "seller_name": seller_name,
+            "url": f"{BASE_URL}{href}" if href else "",
+        })
+    return results
 
 
-def fetch_seller_name(client: httpx.Client, url: str) -> str:
-    """Заходит на страницу объявления и достаёт имя продавца."""
+async def fetch_seller_name_pw(page, url: str) -> str:
     try:
-        r = client.get(url, timeout=10)
-        if r.status_code != 200:
-            return "Privat"
-        soup = BeautifulSoup(r.text, "html.parser")
-        # Имя продавца на странице объявления
-        el = soup.select_one("#viewad-contact .userprofile-vip, #viewad-contact a[href*='/s-bestandslisten/'], .userprofile--name, [data-testid='contact-name']")
-        if el:
-            return el.get_text(strip=True)
-        # Запасной вариант
-        el2 = soup.select_one("a.user-profile-vip, .userprofile-vip-link")
-        if el2:
-            return el2.get_text(strip=True)
+        await page.goto(url, timeout=15000)
+        await page.wait_for_selector("#viewad-contact, .userprofile-vip", timeout=6000)
+        html = await page.content()
+        soup = BeautifulSoup(html, "html.parser")
+        for sel in ["#viewad-contact .userprofile-vip", ".userprofile--name", "[data-testid='contact-name']"]:
+            el = soup.select_one(sel)
+            if el:
+                return el.get_text(strip=True)
         return "Privat"
     except Exception:
         return "Privat"
 
 
-def parse_card(card) -> dict:
-    ad_id = card.get("data-adid", "")
-    href = card.get("data-href", "")
-    seller_id = get_seller_id(href)
+async def scrape_async(cat_slug: str, limit: int = 50) -> list[dict]:
+    from playwright.async_api import async_playwright
 
-    title_el = card.select_one("h2 a.ellipsis")
-    title = title_el.get_text(strip=True) if title_el else ""
-
-    price_el = card.select_one("p.aditem-main--middle--price-shipping--price")
-    price = price_el.get_text(strip=True) if price_el else ""
-
-    location_el = card.select_one("div.aditem-main--top--left")
-    location = location_el.get_text(strip=True) if location_el else ""
-
-    date_el = card.select_one("div.aditem-main--top--right")
-    date = date_el.get_text(strip=True) if date_el else ""
-
-    seller_name = extract_seller_name_from_card(card)
-
-    return {
-        "seller_id": seller_id,
-        "title": title,
-        "price": price,
-        "location": location,
-        "date": date,
-        "seller_name": seller_name,
-        "url": f"{BASE_URL}{href}" if href else "",
-    }
-
-
-def scrape(category_path: str, limit: int = 50, delay: float = 1.0) -> list[dict]:
     results = []
+    seen_ads = set()
     seen_sellers = set()
-    page = 1
 
-    with httpx.Client(headers=HEADERS, timeout=15, follow_redirects=True) as client:
-        while len(results) < limit:
-            if page == 1:
-                url = f"{BASE_URL}{category_path}"
-            else:
-                url = f"{BASE_URL}{category_path.replace('/k0', f'/seite:{page}/k0')}"
+    states = random.sample(GERMAN_STATES, len(GERMAN_STATES))
 
-            resp = client.get(url)
-            if resp.status_code != 200:
+    async with async_playwright() as pw:
+        browser = await pw.chromium.launch(
+            headless=True,
+            args=["--no-sandbox", "--ignore-certificate-errors", "--disable-blink-features=AutomationControlled"]
+        )
+        ctx = await browser.new_context(
+            locale="de-DE",
+            ignore_https_errors=True,
+            viewport={"width": 1280, "height": 800},
+            user_agent=random.choice(USER_AGENTS),
+        )
+        await ctx.add_init_script("Object.defineProperty(navigator, 'webdriver', {get: () => undefined})")
+
+        list_page = await ctx.new_page()
+        detail_page = await ctx.new_page()
+
+        for state_name, state_slug, loc_id in states:
+            if len(results) >= limit:
                 break
 
-            soup = BeautifulSoup(resp.text, "html.parser")
-            cards = soup.select("article.aditem")
-
-            if not cards:
-                break
-
-            for card in cards:
+            for pg in range(1, 9):  # до 8 страниц на землю
                 if len(results) >= limit:
                     break
 
-                item = parse_card(card)
+                url = build_url(cat_slug, state_slug, loc_id, pg)
 
-                if not item["title"] and not item["price"]:
-                    continue
+                try:
+                    await list_page.goto(url, timeout=20000)
+                    await list_page.wait_for_selector("article.aditem", timeout=8000)
+                    await asyncio.sleep(random.uniform(0.5, 1.2))
+                except Exception:
+                    break  # эта земля заблокирована, следующая
 
-                # Чёрный список: один продавец — одно объявление
-                if item["seller_id"] and item["seller_id"] in seen_sellers:
-                    continue
-                if item["seller_id"]:
-                    seen_sellers.add(item["seller_id"])
+                html = await list_page.content()
+                cards = parse_cards_from_html(html)
 
-                # Если имя не найдено в карточке — идём на страницу объявления
-                if not item["seller_name"] and item["url"]:
-                    item["seller_name"] = fetch_seller_name(client, item["url"])
-                    time.sleep(0.3)
+                if not cards:
+                    break
 
-                results.append(item)
+                for card in cards:
+                    if len(results) >= limit:
+                        break
+                    if card["ad_id"] in seen_ads:
+                        continue
+                    if card["seller_id"] and card["seller_id"] in seen_sellers:
+                        continue
 
-            has_next = soup.select_one("a.pagination-next")
-            if not has_next:
-                break
+                    seen_ads.add(card["ad_id"])
+                    if card["seller_id"]:
+                        seen_sellers.add(card["seller_id"])
 
-            page += 1
-            if len(results) < limit:
-                time.sleep(delay)
+                    if not card["seller_name"] and card["url"]:
+                        card["seller_name"] = await fetch_seller_name_pw(detail_page, card["url"])
+                        await asyncio.sleep(random.uniform(0.3, 0.7))
+
+                    results.append(card)
+
+                # Проверяем есть ли следующая страница
+                soup = BeautifulSoup(html, "html.parser")
+                if not soup.select_one("a.pagination-next"):
+                    break
+
+                await asyncio.sleep(random.uniform(1.5, 2.5))
+
+            await asyncio.sleep(random.uniform(1.0, 2.0))
+
+        await browser.close()
 
     return results
 
 
+def scrape(cat_slug: str, limit: int = 50) -> list[dict]:
+    return asyncio.run(scrape_async(cat_slug, limit))
+
+
+def _format_row(i: dict) -> dict:
+    return {
+        "Название": i["title"],
+        "Ссылка на объявление": i["url"],
+        "Цена": i["price"],
+        "Имя продавца": i["seller_name"],
+        "Дата создания": i["date"],
+        "Город": i["location"],
+    }
+
+
 def save_json(data: list[dict], path: str = "results.json") -> str:
-    export = [
-        {
-            "Название": i["title"],
-            "Ссылка на объявление": i["url"],
-            "Цена": i["price"],
-            "Имя продавца": i["seller_name"],
-            "Дата создания": i["date"],
-            "Город": i["location"],
-        }
-        for i in data
-    ]
-    Path(path).write_text(json.dumps(export, ensure_ascii=False, indent=2), encoding="utf-8")
+    Path(path).write_text(json.dumps([_format_row(i) for i in data], ensure_ascii=False, indent=2), encoding="utf-8")
     return path
 
 
 def save_xlsx(data: list[dict], path: str = "results.xlsx") -> str:
-    rows = [
-        {
-            "Название": i["title"],
-            "Ссылка на объявление": i["url"],
-            "Цена": i["price"],
-            "Имя продавца": i["seller_name"],
-            "Дата создания": i["date"],
-            "Город": i["location"],
-        }
-        for i in data
-    ]
-    df = pd.DataFrame(rows)
-    df.to_excel(path, index=False)
+    pd.DataFrame([_format_row(i) for i in data]).to_excel(path, index=False)
     return path
