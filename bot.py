@@ -2,6 +2,7 @@ import asyncio
 import tempfile
 import logging
 import time
+from html import escape
 from aiogram import Bot, Dispatcher, F
 from aiogram.types import Message, FSInputFile, InlineKeyboardMarkup, InlineKeyboardButton, CallbackQuery
 from aiogram.filters import CommandStart, Command
@@ -92,11 +93,13 @@ def export_keyboard(category: str, limit: int) -> InlineKeyboardMarkup:
 
 
 def format_item(item: dict, n: int) -> str:
-    price = item["price"] or "—"
-    date = f" | {item['date']}" if item["date"] else ""
+    title = escape(item["title"] or "Без названия")
+    price = escape(item["price"] or "—")
+    location = escape(item["location"])
+    date = f" | {escape(item['date'])}" if item["date"] else ""
     return (
-        f"<b>{n}. {item['title'] or 'Без названия'}</b>\n"
-        f"💶 {price} | 📍 {item['location']}{date}\n"
+        f"<b>{n}. {title}</b>\n"
+        f"💶 {price} | 📍 {location}{date}\n"
         f"🔗 <a href=\"{item['url']}\">Открыть</a>\n"
     )
 
