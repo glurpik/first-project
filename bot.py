@@ -8,7 +8,7 @@ from aiogram.filters import CommandStart, Command
 from aiogram.fsm.storage.memory import MemoryStorage
 from aiogram.client.session.aiohttp import AiohttpSession
 
-from parser import scrape, save_json, save_xlsx, CATEGORIES
+from parser import scrape, save_json, save_xlsx, CATEGORIES, get_browser
 
 BOT_TOKEN = "8621692689:AAHQ8nznAi3k7ibGBQ0fCDw_jGf-dIykaYM"
 
@@ -58,9 +58,7 @@ async def get_items(cat_slug: str, limit: int) -> tuple[list, bool]:
         if cached is not None:
             return cached, True
 
-        items = await asyncio.get_event_loop().run_in_executor(
-            None, lambda: scrape(cat_slug, limit=limit)
-        )
+        items = await scrape(cat_slug, limit=limit)
         if items:
             _cache_set(key, items)
         return items, False
@@ -203,6 +201,8 @@ async def handle_text(msg: Message):
 
 
 async def main():
+    # Прогреваем браузер при старте — первый запрос будет мгновенным
+    await get_browser()
     await dp.start_polling(bot)
 
 

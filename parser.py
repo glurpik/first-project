@@ -152,28 +152,15 @@ def parse_cards_from_html(html: str) -> list[dict]:
 
 
 async def scrape_async(cat_slug: str, limit: int = 50) -> list[dict]:
-    from playwright.async_api import async_playwright
-
     results = []
     seen_ads: set = set()
     seen_sellers: set = set()
-
     states = random.sample(GERMAN_STATES, len(GERMAN_STATES))
 
-    async with async_playwright() as pw:
-        browser = await pw.chromium.launch(
-            headless=True,
-            args=["--no-sandbox", "--ignore-certificate-errors", "--disable-blink-features=AutomationControlled"]
-        )
-        ctx = await browser.new_context(
-            locale="de-DE",
-            ignore_https_errors=True,
-            viewport={"width": 1280, "height": 800},
-            user_agent=random.choice(USER_AGENTS),
-        )
-        await ctx.add_init_script("Object.defineProperty(navigator, 'webdriver', {get: () => undefined})")
-        page = await ctx.new_page()
+    ctx = await get_browser()
+    page = await ctx.new_page()
 
+    try:
         for _, state_slug, loc_id in states:
             if len(results) >= limit:
                 break
@@ -184,10 +171,10 @@ async def scrape_async(cat_slug: str, limit: int = 50) -> list[dict]:
 
                 url = build_url(cat_slug, state_slug, loc_id, pg)
                 try:
-                    await page.goto(url, timeout=18000)
-                    await page.wait_for_selector("article.aditem", timeout=7000)
+                    await page.goto(url, timeout=10000)
+                    await page.wait_for_selector("article.aditem", timeout=4000)
                 except Exception:
-                    break  # эта земля не отвечает — следующая
+                    break
 
                 html = await page.content()
                 cards = parse_cards_from_html(html)
@@ -209,23 +196,40 @@ async def scrape_async(cat_slug: str, limit: int = 50) -> list[dict]:
                 soup = BeautifulSoup(html, "html.parser")
                 if not soup.select_one("a.pagination-next"):
                     break
+    finally:
+        await page.close()
 
-                # Минимальная пауза между страницами
-                await asyncio.sleep(0.5)
-
-            # Небольшая пауза между землями
-            await asyncio.sleep(0.3)
-
-        await browser.close()
-
-    # Параллельно получаем имена приватных продавцов через httpx
-    await fill_seller_names(results[:limit])
-
+    await fill_seller_names(results[:limit], concurrency=30)
     return results[:limit]
 
 
-def scrape(cat_slug: str, limit: int = 50) -> list[dict]:
-    return asyncio.run(scrape_async(cat_slug, limit))
+_browser = None
+_browser_ctx = None
+
+
+async def get_browser():
+    """Возвращает переиспользуемый браузер (запускается один раз)."""
+    global _browser, _browser_ctx
+    from playwright.async_api import async_playwright
+    if _browser is None or not _browser.is_connected():
+        pw = await async_playwright().start()
+        _browser = await pw.chromium.launch(
+            headless=True,
+            args=["--no-sandbox", "--ignore-certificate-errors", "--disable-blink-features=AutomationControlled"]
+        )
+    if _browser_ctx is None:
+        _browser_ctx = await _browser.new_context(
+            locale="de-DE",
+            ignore_https_errors=True,
+            viewport={"width": 1280, "height": 800},
+            user_agent=random.choice(USER_AGENTS),
+        )
+        await _browser_ctx.add_init_script("Object.defineProperty(navigator, 'webdriver', {get: () => undefined})")
+    return _browser_ctx
+
+
+async def scrape(cat_slug: str, limit: int = 50) -> list[dict]:
+    return await scrape_async(cat_slug, limit)
 
 
 def _format_row(i: dict) -> dict:
