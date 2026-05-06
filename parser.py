@@ -1,6 +1,7 @@
 import asyncio
 import json
 import random
+import httpx
 from bs4 import BeautifulSoup
 import pandas as pd
 from pathlib import Path
@@ -51,6 +52,50 @@ USER_AGENTS = [
 ]
 
 
+DETAIL_HEADERS = {
+    "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 Chrome/123.0 Safari/537.36",
+    "Accept-Language": "de-DE,de;q=0.9",
+}
+
+SELLER_SELECTORS = [
+    "#viewad-contact .userprofile-vip",
+    ".userprofile--name",
+    "a.userprofile-vip-link",
+    "[data-testid='contact-name']",
+]
+
+
+async def _fetch_seller(client: httpx.AsyncClient, url: str) -> str:
+    try:
+        r = await client.get(url, timeout=8)
+        if r.status_code != 200:
+            return "Privat"
+        soup = BeautifulSoup(r.text, "html.parser")
+        for sel in SELLER_SELECTORS:
+            el = soup.select_one(sel)
+            if el:
+                return el.get_text(strip=True)
+        return "Privat"
+    except Exception:
+        return "Privat"
+
+
+async def fill_seller_names(items: list[dict], concurrency: int = 10) -> None:
+    """Параллельно заполняет seller_name для приватных продавцов через httpx."""
+    need = [i for i in items if not i["seller_name"] and i["url"]]
+    if not need:
+        return
+
+    async with httpx.AsyncClient(headers=DETAIL_HEADERS, follow_redirects=True) as client:
+        sem = asyncio.Semaphore(concurrency)
+
+        async def fetch_one(item):
+            async with sem:
+                item["seller_name"] = await _fetch_seller(client, item["url"])
+
+        await asyncio.gather(*[fetch_one(item) for item in need])
+
+
 def build_url(cat_slug: str, state_slug: str, loc_id: int, page: int) -> str:
     if page == 1:
         return f"{BASE_URL}/s-{state_slug}/{cat_slug}/k0l{loc_id}"
@@ -81,8 +126,8 @@ def parse_cards_from_html(html: str) -> list[dict]:
         date_el = card.select_one("div.aditem-main--top--right")
         date = date_el.get_text(strip=True) if date_el else ""
 
-        # PRO-продавцы видны в карточке, остальные — Privat (без доп. запросов)
-        seller_name = "Privat"
+        # PRO-продавцы видны в карточке
+        seller_name = ""
         seller_link = card.select_one("a.j-dont-follow-vip:not(.no-decoration)")
         if seller_link:
             span = seller_link.select_one("span")
@@ -172,6 +217,9 @@ async def scrape_async(cat_slug: str, limit: int = 50) -> list[dict]:
             await asyncio.sleep(0.3)
 
         await browser.close()
+
+    # Параллельно получаем имена приватных продавцов через httpx
+    await fill_seller_names(results[:limit])
 
     return results[:limit]
 
