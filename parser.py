@@ -33,9 +33,39 @@ CATEGORIES = {
 
 
 def get_seller_id(href: str) -> str:
-    # URL формат: /s-anzeige/title/ADID-CATID-SELLERID
     parts = href.rstrip("/").split("-")
     return parts[-1] if parts else ""
+
+
+def extract_seller_name_from_card(card) -> str:
+    """Извлекает имя продавца из карточки (только PRO продавцы видны в карточке)."""
+    seller_link = card.select_one("a.j-dont-follow-vip:not(.no-decoration)")
+    if seller_link:
+        span = seller_link.select_one("span")
+        name = span.get_text(strip=True) if span else seller_link.get_text(strip=True)
+        if name and name != "PRO":
+            return name
+    return ""
+
+
+def fetch_seller_name(client: httpx.Client, url: str) -> str:
+    """Заходит на страницу объявления и достаёт имя продавца."""
+    try:
+        r = client.get(url, timeout=10)
+        if r.status_code != 200:
+            return "Privat"
+        soup = BeautifulSoup(r.text, "html.parser")
+        # Имя продавца на странице объявления
+        el = soup.select_one("#viewad-contact .userprofile-vip, #viewad-contact a[href*='/s-bestandslisten/'], .userprofile--name, [data-testid='contact-name']")
+        if el:
+            return el.get_text(strip=True)
+        # Запасной вариант
+        el2 = soup.select_one("a.user-profile-vip, .userprofile-vip-link")
+        if el2:
+            return el2.get_text(strip=True)
+        return "Privat"
+    except Exception:
+        return "Privat"
 
 
 def parse_card(card) -> dict:
@@ -46,9 +76,6 @@ def parse_card(card) -> dict:
     title_el = card.select_one("h2 a.ellipsis")
     title = title_el.get_text(strip=True) if title_el else ""
 
-    desc_el = card.select_one("p.aditem-main--middle--description")
-    description = desc_el.get_text(strip=True) if desc_el else ""
-
     price_el = card.select_one("p.aditem-main--middle--price-shipping--price")
     price = price_el.get_text(strip=True) if price_el else ""
 
@@ -58,19 +85,16 @@ def parse_card(card) -> dict:
     date_el = card.select_one("div.aditem-main--top--right")
     date = date_el.get_text(strip=True) if date_el else ""
 
-    img_el = card.select_one("img")
-    image = img_el.get("src", "") if img_el else ""
+    seller_name = extract_seller_name_from_card(card)
 
     return {
-        "id": ad_id,
         "seller_id": seller_id,
         "title": title,
         "price": price,
         "location": location,
         "date": date,
-        "description": description,
+        "seller_name": seller_name,
         "url": f"{BASE_URL}{href}" if href else "",
-        "image": image,
     }
 
 
@@ -84,7 +108,6 @@ def scrape(category_path: str, limit: int = 50, delay: float = 1.0) -> list[dict
             if page == 1:
                 url = f"{BASE_URL}{category_path}"
             else:
-                # вставляем seite:N перед /k0
                 url = f"{BASE_URL}{category_path.replace('/k0', f'/seite:{page}/k0')}"
 
             resp = client.get(url)
@@ -106,12 +129,16 @@ def scrape(category_path: str, limit: int = 50, delay: float = 1.0) -> list[dict
                 if not item["title"] and not item["price"]:
                     continue
 
-                # Черный список: пропускаем повторных продавцов
+                # Чёрный список: один продавец — одно объявление
                 if item["seller_id"] and item["seller_id"] in seen_sellers:
                     continue
-
                 if item["seller_id"]:
                     seen_sellers.add(item["seller_id"])
+
+                # Если имя не найдено в карточке — идём на страницу объявления
+                if not item["seller_name"] and item["url"]:
+                    item["seller_name"] = fetch_seller_name(client, item["url"])
+                    time.sleep(0.3)
 
                 results.append(item)
 
@@ -127,11 +154,33 @@ def scrape(category_path: str, limit: int = 50, delay: float = 1.0) -> list[dict
 
 
 def save_json(data: list[dict], path: str = "results.json") -> str:
-    Path(path).write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+    export = [
+        {
+            "Название": i["title"],
+            "Ссылка на объявление": i["url"],
+            "Цена": i["price"],
+            "Имя продавца": i["seller_name"],
+            "Дата создания": i["date"],
+            "Город": i["location"],
+        }
+        for i in data
+    ]
+    Path(path).write_text(json.dumps(export, ensure_ascii=False, indent=2), encoding="utf-8")
     return path
 
 
 def save_xlsx(data: list[dict], path: str = "results.xlsx") -> str:
-    df = pd.DataFrame(data)
+    rows = [
+        {
+            "Название": i["title"],
+            "Ссылка на объявление": i["url"],
+            "Цена": i["price"],
+            "Имя продавца": i["seller_name"],
+            "Дата создания": i["date"],
+            "Город": i["location"],
+        }
+        for i in data
+    ]
+    df = pd.DataFrame(rows)
     df.to_excel(path, index=False)
     return path
