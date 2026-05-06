@@ -1,14 +1,12 @@
 import asyncio
 import json
 import random
-import re
 from bs4 import BeautifulSoup
 import pandas as pd
 from pathlib import Path
 
 BASE_URL = "https://www.kleinanzeigen.de"
 
-# 16 федеральных земель Германии: (название, slug, location_id)
 GERMAN_STATES = [
     ("Baden-Württemberg",      "baden-wuerttemberg",      7970),
     ("Bayern",                  "bayern",                  5510),
@@ -54,7 +52,6 @@ USER_AGENTS = [
 
 
 def build_url(cat_slug: str, state_slug: str, loc_id: int, page: int) -> str:
-    """Строит URL вида /s-{state}/seite:N/{cat}/k0l{loc_id}"""
     if page == 1:
         return f"{BASE_URL}/s-{state_slug}/{cat_slug}/k0l{loc_id}"
     return f"{BASE_URL}/s-{state_slug}/seite:{page}/{cat_slug}/k0l{loc_id}"
@@ -84,7 +81,8 @@ def parse_cards_from_html(html: str) -> list[dict]:
         date_el = card.select_one("div.aditem-main--top--right")
         date = date_el.get_text(strip=True) if date_el else ""
 
-        seller_name = ""
+        # PRO-продавцы видны в карточке, остальные — Privat (без доп. запросов)
+        seller_name = "Privat"
         seller_link = card.select_one("a.j-dont-follow-vip:not(.no-decoration)")
         if seller_link:
             span = seller_link.select_one("span")
@@ -108,27 +106,12 @@ def parse_cards_from_html(html: str) -> list[dict]:
     return results
 
 
-async def fetch_seller_name_pw(page, url: str) -> str:
-    try:
-        await page.goto(url, timeout=15000)
-        await page.wait_for_selector("#viewad-contact, .userprofile-vip", timeout=6000)
-        html = await page.content()
-        soup = BeautifulSoup(html, "html.parser")
-        for sel in ["#viewad-contact .userprofile-vip", ".userprofile--name", "[data-testid='contact-name']"]:
-            el = soup.select_one(sel)
-            if el:
-                return el.get_text(strip=True)
-        return "Privat"
-    except Exception:
-        return "Privat"
-
-
 async def scrape_async(cat_slug: str, limit: int = 50) -> list[dict]:
     from playwright.async_api import async_playwright
 
     results = []
-    seen_ads = set()
-    seen_sellers = set()
+    seen_ads: set = set()
+    seen_sellers: set = set()
 
     states = random.sample(GERMAN_STATES, len(GERMAN_STATES))
 
@@ -144,30 +127,25 @@ async def scrape_async(cat_slug: str, limit: int = 50) -> list[dict]:
             user_agent=random.choice(USER_AGENTS),
         )
         await ctx.add_init_script("Object.defineProperty(navigator, 'webdriver', {get: () => undefined})")
+        page = await ctx.new_page()
 
-        list_page = await ctx.new_page()
-        detail_page = await ctx.new_page()
-
-        for state_name, state_slug, loc_id in states:
+        for _, state_slug, loc_id in states:
             if len(results) >= limit:
                 break
 
-            for pg in range(1, 9):  # до 8 страниц на землю
+            for pg in range(1, 9):
                 if len(results) >= limit:
                     break
 
                 url = build_url(cat_slug, state_slug, loc_id, pg)
-
                 try:
-                    await list_page.goto(url, timeout=20000)
-                    await list_page.wait_for_selector("article.aditem", timeout=8000)
-                    await asyncio.sleep(random.uniform(0.5, 1.2))
+                    await page.goto(url, timeout=18000)
+                    await page.wait_for_selector("article.aditem", timeout=7000)
                 except Exception:
-                    break  # эта земля заблокирована, следующая
+                    break  # эта земля не отвечает — следующая
 
-                html = await list_page.content()
+                html = await page.content()
                 cards = parse_cards_from_html(html)
-
                 if not cards:
                     break
 
@@ -178,29 +156,24 @@ async def scrape_async(cat_slug: str, limit: int = 50) -> list[dict]:
                         continue
                     if card["seller_id"] and card["seller_id"] in seen_sellers:
                         continue
-
                     seen_ads.add(card["ad_id"])
                     if card["seller_id"]:
                         seen_sellers.add(card["seller_id"])
-
-                    if not card["seller_name"] and card["url"]:
-                        card["seller_name"] = await fetch_seller_name_pw(detail_page, card["url"])
-                        await asyncio.sleep(random.uniform(0.3, 0.7))
-
                     results.append(card)
 
-                # Проверяем есть ли следующая страница
                 soup = BeautifulSoup(html, "html.parser")
                 if not soup.select_one("a.pagination-next"):
                     break
 
-                await asyncio.sleep(random.uniform(1.5, 2.5))
+                # Минимальная пауза между страницами
+                await asyncio.sleep(0.5)
 
-            await asyncio.sleep(random.uniform(1.0, 2.0))
+            # Небольшая пауза между землями
+            await asyncio.sleep(0.3)
 
         await browser.close()
 
-    return results
+    return results[:limit]
 
 
 def scrape(cat_slug: str, limit: int = 50) -> list[dict]:
