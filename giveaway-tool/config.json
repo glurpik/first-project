@@ -1,25 +1,43 @@
 {
   "api_id": 0,
   "api_hash": "YOUR_API_HASH_HERE",
-  "channels_to_monitor": [
-    "durov",
-    "telegram"
-  ],
+
+  "channels_to_monitor": [],
+
+  "auto_discover": true,
+
   "keywords": [
     "розыгрыш", "giveaway", "конкурс", "победитель",
     "выиграй", "разыгрываем", "приз", "подарок",
     "участвуй", "вступи и выиграй", "розыгрышь",
     "🎁", "🎉", "🏆", "🎊"
   ],
-  "scan_interval_seconds": 60,
+
+  "scan_interval_seconds": 120,
+  "rediscover_interval_hours": 6,
+
   "accounts": [
     {
       "phone": "+79991234567",
-      "session_name": "account1"
+      "session_name": "account1",
+      "proxy": null
     },
     {
       "phone": "+79997654321",
-      "session_name": "account2"
+      "session_name": "account2",
+      "proxy": {
+        "type": "socks5",
+        "addr": "127.0.0.1",
+        "port": 1080,
+        "username": "",
+        "password": ""
+      }
     }
-  ]
+  ],
+
+  "limits": {
+    "joins_per_hour": 15,
+    "joins_per_day": 50,
+    "messages_per_hour": 10
+  }
 }

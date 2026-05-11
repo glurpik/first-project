@@ -1,7 +1,6 @@
 """
 Telegram Giveaway Research Tool
 Investigative tool for documenting fake/rigged Telegram giveaways.
-Participates with multiple accounts and tracks win statistics.
 """
 
 import asyncio
@@ -9,19 +8,24 @@ import json
 import logging
 import os
 import sys
-from datetime import datetime
+from datetime import datetime, timedelta
 
 from colorama import Fore, Style, init as colorama_init
-from telethon import TelegramClient, events
+from telethon import TelegramClient
 from telethon.errors import (
     ChannelPrivateError, FloodWaitError, UserAlreadyParticipantError,
-    ChatWriteForbiddenError, SessionPasswordNeededError
+    ChatWriteForbiddenError
 )
 from telethon.tl.functions.channels import JoinChannelRequest
 from telethon.tl.functions.messages import ImportChatInviteRequest
 
 import database as db
+import anti_ban
 from parser import detect_giveaway
+from discoverer import (
+    run_discovery, get_all_channels, save_channel,
+    extract_channels_from_post, init_channels_table
+)
 
 colorama_init(autoreset=True)
 logging.basicConfig(
@@ -39,14 +43,27 @@ CONFIG_FILE = "config.json"
 
 def load_config() -> dict:
     if not os.path.exists(CONFIG_FILE):
-        print(f"{Fore.RED}Файл config.json не найден! Скопируй config.json и заполни данные.{Style.RESET_ALL}")
+        print(f"{Fore.RED}Файл config.json не найден!{Style.RESET_ALL}")
         sys.exit(1)
     with open(CONFIG_FILE, encoding="utf-8") as f:
         cfg = json.load(f)
     if cfg.get("api_id") == 0 or cfg.get("api_hash") == "YOUR_API_HASH_HERE":
         print(f"{Fore.RED}Заполни api_id и api_hash в config.json (получить на my.telegram.org){Style.RESET_ALL}")
         sys.exit(1)
+    # Обновляем лимиты anti_ban из конфига
+    if "limits" in cfg:
+        anti_ban.LIMITS.update(cfg["limits"])
     return cfg
+
+
+def make_client(cfg: dict, account_cfg: dict, suffix: str = "") -> TelegramClient:
+    proxy = anti_ban.get_proxy_for_telethon(account_cfg.get("proxy"))
+    return TelegramClient(
+        account_cfg["session_name"] + suffix,
+        cfg["api_id"],
+        cfg["api_hash"],
+        proxy=proxy
+    )
 
 
 def print_banner():
@@ -58,117 +75,119 @@ def print_banner():
     print(f"{Style.RESET_ALL}")
 
 
-async def join_channel(client: TelegramClient, username: str, account_phone: str) -> bool:
+async def join_channel_safe(
+    client: TelegramClient, username: str, account_phone: str
+) -> bool:
+    if not anti_ban.can_join(account_phone):
+        return False
+
+    await anti_ban.join_delay()
     try:
-        if username.startswith("joinchat/") or username.startswith("+"):
-            invite_hash = username.replace("joinchat/", "").replace("+", "")
+        if username.startswith("joinchat/") or (len(username) > 5 and username.startswith("+")):
+            invite_hash = username.replace("joinchat/", "").lstrip("+")
             await client(ImportChatInviteRequest(invite_hash))
         else:
             await client(JoinChannelRequest(username))
+
+        anti_ban.record_join(account_phone)
         log.info(f"{Fore.GREEN}[{account_phone}] Вступил в @{username}{Style.RESET_ALL}")
-        await asyncio.sleep(2)  # Небольшая пауза чтобы не триггерить флуд
         return True
+
     except UserAlreadyParticipantError:
         return True
     except ChannelPrivateError:
-        log.warning(f"[{account_phone}] Канал @{username} приватный или недоступен")
+        log.warning(f"[{account_phone}] Канал @{username} приватный")
         return False
     except FloodWaitError as e:
-        log.warning(f"[{account_phone}] FloodWait {e.seconds}s при вступлении в @{username}")
-        await asyncio.sleep(e.seconds)
+        log.warning(f"[{account_phone}] FloodWait {e.seconds}s — пауза")
+        await asyncio.sleep(e.seconds + 5)
         return False
     except Exception as e:
         log.warning(f"[{account_phone}] Ошибка при вступлении в @{username}: {e}")
         return False
 
 
-async def participate_in_giveaway(
+async def participate(
     client: TelegramClient,
     account_phone: str,
     giveaway_id: int,
     channel: str,
     message_id: int,
     giveaway_info,
-):
-    actions_taken = []
+) -> list:
+    actions = []
 
-    # 1. Вступить во все упомянутые каналы
+    # 1. Вступить в основной канал
+    ok = await join_channel_safe(client, channel, account_phone)
+    if ok:
+        actions.append(f"joined_main:{channel}")
+
+    # 2. Вступить во все упомянутые каналы
     for ch in giveaway_info.channels_to_join:
-        success = await join_channel(client, ch, account_phone)
-        if success:
-            actions_taken.append(f"joined:{ch}")
+        if ch == channel:
+            continue
+        ok = await join_channel_safe(client, ch, account_phone)
+        if ok:
+            actions.append(f"joined:{ch}")
 
-    # 2. Основной канал розыгрыша
-    await join_channel(client, channel, account_phone)
-    actions_taken.append(f"joined_main:{channel}")
-
-    # 3. Оставить комментарий (если требуется)
+    # 3. Оставить комментарий если нужно
     if giveaway_info.needs_comment and giveaway_info.comment_text:
-        try:
-            await client.send_message(
-                channel,
-                giveaway_info.comment_text,
-                comment_to=message_id
-            )
-            actions_taken.append(f"commented:{giveaway_info.comment_text}")
-            log.info(f"{Fore.GREEN}[{account_phone}] Оставил комментарий '{giveaway_info.comment_text}'{Style.RESET_ALL}")
-            await asyncio.sleep(3)
-        except ChatWriteForbiddenError:
-            log.warning(f"[{account_phone}] Нельзя комментировать в {channel}")
-        except Exception as e:
-            log.warning(f"[{account_phone}] Ошибка комментария: {e}")
+        if anti_ban.can_comment(account_phone):
+            await anti_ban.after_comment_delay()
+            try:
+                await client.send_message(
+                    channel,
+                    giveaway_info.comment_text,
+                    comment_to=message_id
+                )
+                anti_ban.record_comment(account_phone)
+                actions.append(f"commented:{giveaway_info.comment_text}")
+                log.info(f"{Fore.GREEN}[{account_phone}] Комментарий '{giveaway_info.comment_text}'{Style.RESET_ALL}")
+            except ChatWriteForbiddenError:
+                log.warning(f"[{account_phone}] Нельзя комментировать @{channel}")
+            except Exception as e:
+                log.warning(f"[{account_phone}] Ошибка комментария: {e}")
 
-    # 4. Сохранить участие в БД
-    await db.save_participation(account_phone, giveaway_id, actions_taken)
+    await db.save_participation(account_phone, giveaway_id, actions)
 
+    ban_stats = anti_ban.get_stats_for_account(account_phone)
     print(
-        f"{Fore.GREEN}[{account_phone}] Участие зафиксировано | "
-        f"Действия: {', '.join(actions_taken) or 'только вступление'}{Style.RESET_ALL}"
+        f"{Fore.GREEN}[{account_phone}] Участие записано | "
+        f"Действий: {len(actions)} | "
+        f"Вступлений сегодня: {ban_stats['joins_today']}/{anti_ban.LIMITS['joins_per_day']}"
+        f"{Style.RESET_ALL}"
     )
-    return actions_taken
+    return actions
 
 
-async def run_account(cfg: dict, account_cfg: dict, all_giveaways: dict):
-    """Запускает один аккаунт — подписывается на мониторинг и участвует в розыгрышах."""
-    phone = account_cfg["phone"]
-    session = account_cfg["session_name"]
-
-    client = TelegramClient(session, cfg["api_id"], cfg["api_hash"])
-    await client.start(phone=phone)
-
-    me = await client.get_me()
-    print(f"{Fore.CYAN}Аккаунт {phone} ({me.first_name}) подключён{Style.RESET_ALL}")
-
-    # Участвуем в уже найденных розыгрышах
-    for key, (gid, channel, message_id, ginfo) in all_giveaways.items():
-        await participate_in_giveaway(client, phone, gid, channel, message_id, ginfo)
-        await asyncio.sleep(5)
-
-    await client.disconnect()
-
-
-async def scan_channels(cfg: dict) -> dict:
-    """Сканирует каналы одним аккаунтом, возвращает найденные розыгрыши."""
+async def scan_and_participate(cfg: dict):
+    """Один полный цикл: скан → участие всеми аккаунтами."""
     if not cfg["accounts"]:
-        print(f"{Fore.RED}Нет аккаунтов в config.json{Style.RESET_ALL}")
-        return {}
+        return
 
+    # Берём первый аккаунт как сканер
     scanner_cfg = cfg["accounts"][0]
-    scanner = TelegramClient(
-        scanner_cfg["session_name"] + "_scan",
-        cfg["api_id"],
-        cfg["api_hash"]
-    )
+    scanner = make_client(cfg, scanner_cfg, "_scan")
     await scanner.start(phone=scanner_cfg["phone"])
 
-    found_giveaways = {}
-    keywords = cfg.get("keywords", [])
+    # Получаем список каналов (из БД + config)
+    channels_in_config = cfg.get("channels_to_monitor", [])
+    channels_from_db = await get_all_channels()
+    all_channels = list(set(channels_in_config + channels_from_db))
 
-    for channel_username in cfg.get("channels_to_monitor", []):
+    if not all_channels:
+        print(f"{Fore.YELLOW}Нет каналов для сканирования. Запусти discovery или добавь в config.json{Style.RESET_ALL}")
+        await scanner.disconnect()
+        return
+
+    print(f"Сканирую {len(all_channels)} каналов...")
+    keywords = cfg.get("keywords", [])
+    new_giveaways: dict = {}
+
+    for channel_username in all_channels:
         try:
-            print(f"Сканирую @{channel_username}...")
             entity = await scanner.get_entity(channel_username)
-            messages = await scanner.get_messages(entity, limit=50)
+            messages = await scanner.get_messages(entity, limit=30)
 
             for msg in messages:
                 if not msg.text:
@@ -178,31 +197,76 @@ async def scan_channels(cfg: dict) -> dict:
                     continue
 
                 key = f"{channel_username}_{msg.id}"
-                if key in found_giveaways:
-                    continue
-
                 gid = await db.save_giveaway(
                     channel_username, msg.id, msg.text, ginfo.channels_to_join
                 )
-
                 if gid > 0:
-                    found_giveaways[key] = (gid, channel_username, msg.id, ginfo)
-                    print(
-                        f"{Fore.YELLOW}Найден розыгрыш в @{channel_username} "
-                        f"(msg #{msg.id}){Style.RESET_ALL}"
-                    )
-                    if ginfo.end_date_hint:
-                        print(f"  Дата окончания: {ginfo.end_date_hint}")
-                    print(f"  Каналы для вступления: {ginfo.channels_to_join}")
+                    new_giveaways[key] = (gid, channel_username, msg.id, ginfo)
+                    print(f"{Fore.YELLOW}Розыгрыш: @{channel_username} msg#{msg.id}{Style.RESET_ALL}")
+
+                    # Добавляем упомянутые каналы в БД для дальнейшего мониторинга
+                    for extra_ch in extract_channels_from_post(msg.text):
+                        await save_channel(extra_ch, f"mentioned_in:{channel_username}")
+
+            await asyncio.sleep(1)
 
         except FloodWaitError as e:
             log.warning(f"FloodWait {e.seconds}s при сканировании @{channel_username}")
             await asyncio.sleep(e.seconds)
         except Exception as e:
-            log.warning(f"Ошибка при сканировании @{channel_username}: {e}")
+            log.debug(f"Пропускаю @{channel_username}: {e}")
 
     await scanner.disconnect()
-    return found_giveaways
+
+    if not new_giveaways:
+        print("Новых розыгрышей не найдено.")
+        return
+
+    print(f"{Fore.YELLOW}Найдено новых розыгрышей: {len(new_giveaways)}{Style.RESET_ALL}")
+
+    # Каждый расходник участвует
+    for account_cfg in cfg["accounts"]:
+        phone = account_cfg["phone"]
+        client = make_client(cfg, account_cfg)
+        try:
+            await client.start(phone=phone)
+            me = await client.get_me()
+            print(f"{Fore.CYAN}Аккаунт {phone} ({me.first_name}){Style.RESET_ALL}")
+
+            for key, (gid, channel, message_id, ginfo) in new_giveaways.items():
+                await participate(client, phone, gid, channel, message_id, ginfo)
+                await anti_ban.human_delay(3, 8)
+
+        except Exception as e:
+            log.error(f"Ошибка аккаунта {phone}: {e}")
+        finally:
+            await client.disconnect()
+
+        await anti_ban.between_accounts_delay()
+
+
+async def run_discovery_cycle(cfg: dict, last_discovery: datetime) -> datetime:
+    """Запускает discovery если прошло достаточно времени."""
+    interval_h = cfg.get("rediscover_interval_hours", 6)
+    if datetime.now() - last_discovery < timedelta(hours=interval_h):
+        return last_discovery
+
+    if not cfg.get("auto_discover", True):
+        return last_discovery
+
+    print(f"{Fore.CYAN}Запускаю автопоиск новых каналов...{Style.RESET_ALL}")
+    scanner_cfg = cfg["accounts"][0]
+    proxy_cfg = scanner_cfg.get("proxy")
+
+    client = make_client(cfg, scanner_cfg, "_discovery")
+    try:
+        await client.start(phone=scanner_cfg["phone"])
+        total = await run_discovery(client, proxy_cfg)
+        print(f"{Fore.CYAN}Каналов в базе: {total}{Style.RESET_ALL}")
+    finally:
+        await client.disconnect()
+
+    return datetime.now()
 
 
 async def print_stats():
@@ -210,11 +274,11 @@ async def print_stats():
     print(f"\n{Fore.CYAN}{'='*50}")
     print("СТАТИСТИКА ИССЛЕДОВАНИЯ")
     print(f"{'='*50}{Style.RESET_ALL}")
-    print(f"Розыгрышей найдено:      {stats['total_giveaways_found']}")
-    print(f"Участий совершено:        {stats['total_participations']}")
-    print(f"Побед:                    {stats['total_wins']}")
-    print(f"Аккаунтов задействовано:  {stats['accounts_used']}")
-    print(f"Процент побед:            {Fore.RED}{stats['win_rate']}{Style.RESET_ALL}")
+    print(f"Розыгрышей найдено:       {stats['total_giveaways_found']}")
+    print(f"Участий совершено:         {stats['total_participations']}")
+    print(f"Побед:                     {Fore.RED}{stats['total_wins']}{Style.RESET_ALL}")
+    print(f"Аккаунтов задействовано:   {stats['accounts_used']}")
+    print(f"Процент побед:             {Fore.RED}{stats['win_rate']}{Style.RESET_ALL}")
     print(f"{Fore.CYAN}{'='*50}{Style.RESET_ALL}\n")
 
 
@@ -222,42 +286,35 @@ async def main():
     print_banner()
     cfg = load_config()
     await db.init_db()
+    await init_channels_table()
 
     print(f"Аккаунтов: {len(cfg['accounts'])}")
-    print(f"Каналов для мониторинга: {len(cfg['channels_to_monitor'])}")
-    print(f"Интервал сканирования: {cfg.get('scan_interval_seconds', 60)}s\n")
+    print(f"Автопоиск каналов: {'ВКЛ' if cfg.get('auto_discover') else 'ВЫКЛ'}")
+    print(f"Интервал сканирования: {cfg.get('scan_interval_seconds', 120)}s\n")
 
+    last_discovery = datetime.min
     iteration = 0
+
     while True:
         iteration += 1
         print(f"\n{Fore.CYAN}[{datetime.now().strftime('%H:%M:%S')}] Итерация #{iteration}{Style.RESET_ALL}")
 
-        # 1. Сканировать каналы и найти новые розыгрыши
+        # Периодический поиск новых каналов
         try:
-            giveaways = await scan_channels(cfg)
+            last_discovery = await run_discovery_cycle(cfg, last_discovery)
+        except Exception as e:
+            log.error(f"Ошибка discovery: {e}")
+
+        # Сканирование и участие
+        try:
+            await scan_and_participate(cfg)
         except Exception as e:
             log.error(f"Ошибка сканирования: {e}")
-            giveaways = {}
 
-        if giveaways:
-            print(f"{Fore.YELLOW}Новых розыгрышей: {len(giveaways)}{Style.RESET_ALL}")
-
-            # 2. Каждый расходник участвует во всех найденных розыгрышах
-            for account_cfg in cfg["accounts"]:
-                try:
-                    await run_account(cfg, account_cfg, giveaways)
-                    await asyncio.sleep(10)  # Пауза между аккаунтами
-                except Exception as e:
-                    log.error(f"Ошибка аккаунта {account_cfg['phone']}: {e}")
-        else:
-            print("Новых розыгрышей не найдено.")
-
-        # 3. Показать текущую статистику
         await print_stats()
 
-        # 4. Ждём до следующего сканирования
-        interval = cfg.get("scan_interval_seconds", 60)
-        print(f"Следующее сканирование через {interval}s...")
+        interval = cfg.get("scan_interval_seconds", 120)
+        print(f"Следующий скан через {interval}s...")
         await asyncio.sleep(interval)
 
 
@@ -265,5 +322,5 @@ if __name__ == "__main__":
     try:
         asyncio.run(main())
     except KeyboardInterrupt:
-        print(f"\n{Fore.YELLOW}Остановлено. Итоговая статистика:{Style.RESET_ALL}")
+        print(f"\n{Fore.YELLOW}Остановлено. Финальная статистика:{Style.RESET_ALL}")
         asyncio.run(print_stats())
