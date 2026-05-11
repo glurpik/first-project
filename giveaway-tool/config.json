@@ -1,0 +1,25 @@
+{
+  "api_id": 0,
+  "api_hash": "YOUR_API_HASH_HERE",
+  "channels_to_monitor": [
+    "durov",
+    "telegram"
+  ],
+  "keywords": [
+    "розыгрыш", "giveaway", "конкурс", "победитель",
+    "выиграй", "разыгрываем", "приз", "подарок",
+    "участвуй", "вступи и выиграй", "розыгрышь",
+    "🎁", "🎉", "🏆", "🎊"
+  ],
+  "scan_interval_seconds": 60,
+  "accounts": [
+    {
+      "phone": "+79991234567",
+      "session_name": "account1"
+    },
+    {
+      "phone": "+79997654321",
+      "session_name": "account2"
+    }
+  ]
+}
