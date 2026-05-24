@@ -1,79 +1,109 @@
-const CHART_COLORS = {
-    primary: '#ff6d00',
-    primaryAlpha: 'rgba(255, 109, 0, 0.15)',
-    green: '#4caf50',
-    greenAlpha: 'rgba(76, 175, 80, 0.15)',
-    red: '#ef5350',
-    redAlpha: 'rgba(239, 83, 80, 0.15)',
-    blue: '#42a5f5',
-    grid: '#1e1e1e',
-    text: '#666',
-};
+/**
+ * charts.js — Chart.js setup and management for XMR Mining Dashboard
+ *
+ * Exports two chart instances:
+ *   window.hashrateChart  — line chart showing hashrate over 60 minutes
+ *   window.sharesChart    — bar chart showing accepted/rejected shares
+ */
 
-const chartDefaults = {
-    responsive: true,
-    maintainAspectRatio: false,
-    animation: { duration: 300 },
-    plugins: {
-        legend: { display: false },
-        tooltip: {
-            backgroundColor: '#1a1a1a',
-            borderColor: '#333',
-            borderWidth: 1,
-            titleColor: '#fff',
-            bodyColor: '#aaa',
-        }
-    },
-    scales: {
+'use strict';
+
+(function () {
+
+    /* ---- Shared Chart Defaults ---- */
+    Chart.defaults.color = '#9E9E9E';
+    Chart.defaults.font.family = "'Courier New', monospace";
+    Chart.defaults.font.size = 11;
+
+    /* ---- Color palette ---- */
+    const ORANGE       = '#FF6D00';
+    const ORANGE_DIM   = 'rgba(255, 109, 0, 0.15)';
+    const ORANGE_FADE  = 'rgba(255, 109, 0, 0)';
+    const GREEN        = '#4CAF50';
+    const GREEN_DIM    = 'rgba(76, 175, 80, 0.25)';
+    const RED          = '#F44336';
+    const RED_DIM      = 'rgba(244, 67, 54, 0.25)';
+    const GRID_COLOR   = 'rgba(255, 255, 255, 0.05)';
+
+    /* ---- Shared axis/grid config ---- */
+    const sharedScales = {
         x: {
-            grid: { color: CHART_COLORS.grid },
-            ticks: { color: CHART_COLORS.text, maxTicksLimit: 8 }
+            grid: { color: GRID_COLOR, drawBorder: false },
+            ticks: { maxTicksLimit: 8, maxRotation: 0 },
         },
         y: {
-            grid: { color: CHART_COLORS.grid },
-            ticks: { color: CHART_COLORS.text }
-        }
-    }
-};
+            grid: { color: GRID_COLOR, drawBorder: false },
+            ticks: { maxTicksLimit: 6 },
+            beginAtZero: true,
+        },
+    };
 
-function initHashrateChart() {
-    const ctx = document.getElementById('hashrateChart').getContext('2d');
-    return new Chart(ctx, {
+    /* ================================================================
+       1. Hashrate Chart  (line, area fill, 60-point rolling window)
+    ================================================================ */
+    const hashrateCtx = document.getElementById('hashrateChart');
+
+    // Create gradient fill
+    function makeHashrateGradient(ctx, chartArea) {
+        const grad = ctx.createLinearGradient(0, chartArea.top, 0, chartArea.bottom);
+        grad.addColorStop(0, ORANGE_DIM);
+        grad.addColorStop(1, ORANGE_FADE);
+        return grad;
+    }
+
+    window.hashrateChart = new Chart(hashrateCtx, {
         type: 'line',
         data: {
             labels: [],
             datasets: [{
                 label: 'Hashrate',
                 data: [],
-                borderColor: CHART_COLORS.primary,
-                backgroundColor: CHART_COLORS.primaryAlpha,
+                borderColor: ORANGE,
                 borderWidth: 2,
-                fill: true,
-                tension: 0.4,
                 pointRadius: 0,
                 pointHoverRadius: 4,
-            }]
+                pointHoverBackgroundColor: ORANGE,
+                tension: 0.4,
+                fill: true,
+                backgroundColor: function (context) {
+                    const chart = context.chart;
+                    const { ctx: c, chartArea } = chart;
+                    if (!chartArea) return ORANGE_DIM;
+                    return makeHashrateGradient(c, chartArea);
+                },
+            }],
         },
         options: {
-            ...chartDefaults,
-            scales: {
-                ...chartDefaults.scales,
-                y: {
-                    ...chartDefaults.scales.y,
-                    beginAtZero: true,
-                    ticks: {
-                        color: CHART_COLORS.text,
-                        callback: (v) => v >= 1000 ? `${(v/1000).toFixed(1)}K` : v.toFixed(1)
-                    }
-                }
-            }
-        }
+            responsive: true,
+            maintainAspectRatio: false,
+            animation: { duration: 300 },
+            interaction: { mode: 'index', intersect: false },
+            plugins: {
+                legend: { display: false },
+                tooltip: {
+                    backgroundColor: '#1A1A1A',
+                    borderColor: ORANGE,
+                    borderWidth: 1,
+                    titleColor: '#9E9E9E',
+                    bodyColor: ORANGE,
+                    padding: 10,
+                    callbacks: {
+                        label: function (ctx) {
+                            return ' ' + formatHashrate(ctx.parsed.y);
+                        },
+                    },
+                },
+            },
+            scales: sharedScales,
+        },
     });
-}
 
-function initSharesChart() {
-    const ctx = document.getElementById('sharesChart').getContext('2d');
-    return new Chart(ctx, {
+    /* ================================================================
+       2. Shares Chart  (bar, grouped accepted + rejected)
+    ================================================================ */
+    const sharesCtx = document.getElementById('sharesChart');
+
+    window.sharesChart = new Chart(sharesCtx, {
         type: 'bar',
         data: {
             labels: [],
@@ -81,64 +111,117 @@ function initSharesChart() {
                 {
                     label: 'Accepted',
                     data: [],
-                    backgroundColor: CHART_COLORS.greenAlpha,
-                    borderColor: CHART_COLORS.green,
-                    borderWidth: 1,
+                    backgroundColor: GREEN_DIM,
+                    borderColor: GREEN,
+                    borderWidth: 1.5,
+                    borderRadius: 4,
+                    barPercentage: 0.6,
                 },
                 {
                     label: 'Rejected',
                     data: [],
-                    backgroundColor: CHART_COLORS.redAlpha,
-                    borderColor: CHART_COLORS.red,
-                    borderWidth: 1,
-                }
-            ]
+                    backgroundColor: RED_DIM,
+                    borderColor: RED,
+                    borderWidth: 1.5,
+                    borderRadius: 4,
+                    barPercentage: 0.6,
+                },
+            ],
         },
         options: {
-            ...chartDefaults,
+            responsive: true,
+            maintainAspectRatio: false,
+            animation: { duration: 250 },
+            interaction: { mode: 'index', intersect: false },
             plugins: {
-                ...chartDefaults.plugins,
                 legend: {
-                    display: true,
-                    labels: { color: '#aaa', boxWidth: 12, font: { size: 11 } }
-                }
+                    display: false, // handled in HTML
+                },
+                tooltip: {
+                    backgroundColor: '#1A1A1A',
+                    borderColor: 'rgba(255,255,255,0.1)',
+                    borderWidth: 1,
+                    titleColor: '#9E9E9E',
+                    padding: 10,
+                },
             },
             scales: {
-                ...chartDefaults.scales,
-                y: { ...chartDefaults.scales.y, beginAtZero: true }
-            }
-        }
-    });
-}
-
-function initEfficiencyChart() {
-    const ctx = document.getElementById('efficiencyChart').getContext('2d');
-    return new Chart(ctx, {
-        type: 'line',
-        data: {
-            labels: [],
-            datasets: [{
-                label: 'Efficiency %',
-                data: [],
-                borderColor: CHART_COLORS.blue,
-                backgroundColor: 'rgba(66,165,245,0.1)',
-                borderWidth: 2,
-                fill: true,
-                tension: 0.4,
-                pointRadius: 0,
-            }]
-        },
-        options: {
-            ...chartDefaults,
-            scales: {
-                ...chartDefaults.scales,
+                ...sharedScales,
                 y: {
-                    ...chartDefaults.scales.y,
-                    min: 0,
-                    max: 100,
-                    ticks: { color: CHART_COLORS.text, callback: (v) => `${v}%` }
-                }
-            }
-        }
+                    ...sharedScales.y,
+                    ticks: {
+                        stepSize: 1,
+                        maxTicksLimit: 5,
+                        callback: v => Number.isInteger(v) ? v : null,
+                    },
+                },
+            },
+        },
     });
-}
+
+    /* ================================================================
+       Chart update helpers — called by dashboard.js
+    ================================================================ */
+
+    /**
+     * Push a new hashrate data point.
+     * @param {string} label - Time label (e.g. "14:03")
+     * @param {number} value - Hashrate in H/s
+     */
+    window.pushHashratePoint = function (label, value) {
+        const chart = window.hashrateChart;
+        const MAX = 60;
+
+        chart.data.labels.push(label);
+        chart.data.datasets[0].data.push(value);
+
+        if (chart.data.labels.length > MAX) {
+            chart.data.labels.shift();
+            chart.data.datasets[0].data.shift();
+        }
+
+        chart.update('none');
+    };
+
+    /**
+     * Push new shares data point.
+     * @param {string} label
+     * @param {number} accepted
+     * @param {number} rejected
+     */
+    window.pushSharesPoint = function (label, accepted, rejected) {
+        const chart = window.sharesChart;
+        const MAX = 30;
+
+        chart.data.labels.push(label);
+        chart.data.datasets[0].data.push(accepted);
+        chart.data.datasets[1].data.push(rejected);
+
+        if (chart.data.labels.length > MAX) {
+            chart.data.labels.shift();
+            chart.data.datasets[0].data.shift();
+            chart.data.datasets[1].data.shift();
+        }
+
+        chart.update('none');
+    };
+
+    /**
+     * Clear all chart data (e.g. on miner reconnect).
+     */
+    window.clearCharts = function () {
+        [window.hashrateChart, window.sharesChart].forEach(c => {
+            c.data.labels = [];
+            c.data.datasets.forEach(d => (d.data = []));
+            c.update('none');
+        });
+    };
+
+    /* ---- Utility ---- */
+    function formatHashrate(hps) {
+        if (hps >= 1e6) return (hps / 1e6).toFixed(2) + ' MH/s';
+        if (hps >= 1e3) return (hps / 1e3).toFixed(2) + ' KH/s';
+        return hps.toFixed(2) + ' H/s';
+    }
+
+})();

@@ -1,14 +1,18 @@
 {
-  "name": "xmr-miner-server",
+  "name": "xmr-miner-stats-server",
   "version": "1.0.0",
-  "description": "Stats API server for XMR Miner Android app",
+  "description": "Lightweight Express stats server for XMR Mining Dashboard",
   "main": "server.js",
   "scripts": {
     "start": "node server.js",
-    "dev": "npx nodemon server.js"
+    "dev": "node --watch server.js"
   },
   "dependencies": {
-    "express": "^4.18.2",
-    "cors": "^2.8.5"
-  }
+    "cors": "^2.8.5",
+    "express": "^4.18.2"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  },
+  "license": "MIT"
 }

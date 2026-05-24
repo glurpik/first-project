@@ -1,191 +1,308 @@
-// API endpoint — set to your server URL, or null to use demo data
-const API_URL = null; // e.g. 'http://192.168.1.100:3000/api/stats'
+/**
+ * dashboard.js — Main dashboard logic for XMR Mining Dashboard
+ *
+ * Features:
+ *  - Auto-refresh every 5 seconds
+ *  - Fetches stats from REST API (GET /api/stats)
+ *  - Falls back to mock/demo data when API is unavailable or demo mode is on
+ *  - Updates all KPI cards, chart data, and status indicators
+ */
 
-const REFRESH_INTERVAL = 5000;
-const MAX_HISTORY = 60;
+'use strict';
 
-let hashrateChart, sharesChart, efficiencyChart;
-let historyLabels = [];
-let hashrateHistory = [];
-let acceptedHistory = [];
-let rejectedHistory = [];
-let efficiencyHistory = [];
-let prevAccepted = 0, prevRejected = 0;
-let countdown = REFRESH_INTERVAL / 1000;
-let isOnline = false;
+(function () {
 
-// Demo data simulation
-let demoHashrate = 150;
-let demoAccepted = 0;
-let demoRejected = 0;
-let demoUptime = 0;
-let demoTick = 0;
+    /* ================================================================
+       Configuration
+    ================================================================ */
+    const API_URL         = '/api/stats';     // Express server endpoint
+    const REFRESH_INTERVAL = 5000;            // ms
 
-function generateDemoStats() {
-    demoTick++;
-    demoUptime += REFRESH_INTERVAL / 1000;
+    /* ================================================================
+       State
+    ================================================================ */
+    let demoMode         = false;
+    let refreshTimer     = null;
+    let countdownTimer   = null;
+    let countdownValue   = REFRESH_INTERVAL / 1000;
+    let isOnline         = false;
 
-    // Simulate variable hashrate (100-200 H/s)
-    demoHashrate += (Math.random() - 0.5) * 30;
-    demoHashrate = Math.max(80, Math.min(250, demoHashrate));
-
-    // Occasionally accept a share
-    if (demoTick % 6 === 0) demoAccepted++;
-    if (demoTick % 40 === 0) demoRejected++;
-
-    const total = demoAccepted + demoRejected;
-    return {
-        hashrate: demoHashrate,
-        accepted: demoAccepted,
-        rejected: demoRejected,
-        total_hashes: Math.floor(demoHashrate * demoUptime),
-        uptime_seconds: Math.floor(demoUptime),
-        difficulty: 65536,
-        efficiency: total > 0 ? (demoAccepted / total * 100).toFixed(1) : 100,
-        timestamp: Date.now(),
-        demo: true
+    // Demo state — tracks a simulated miner
+    const demo = {
+        hashrate:      0,
+        accepted:      0,
+        rejected:      0,
+        totalHashes:   0,
+        uptime:        0,
+        difficulty:    1024,
+        startTime:     Date.now(),
+        // simulated hashrate trends
+        baseHashrate:  350,
+        variance:      80,
     };
-}
 
-async function fetchStats() {
-    if (!API_URL) return generateDemoStats();
-    try {
-        const res = await fetch(API_URL, { signal: AbortSignal.timeout(4000) });
-        if (!res.ok) throw new Error(`HTTP ${res.status}`);
-        return await res.json();
-    } catch (e) {
-        return null;
-    }
-}
+    // Previous accepted/rejected for per-interval delta (shares chart)
+    let prevAccepted = 0;
+    let prevRejected = 0;
 
-function formatHashrate(hps) {
-    if (hps >= 1_000_000) return { value: (hps / 1_000_000).toFixed(2), unit: 'MH/s' };
-    if (hps >= 1_000)     return { value: (hps / 1_000).toFixed(2), unit: 'KH/s' };
-    return { value: hps.toFixed(2), unit: 'H/s' };
-}
+    /* ================================================================
+       DOM references
+    ================================================================ */
+    const $ = id => document.getElementById(id);
 
-function formatNumber(n) {
-    if (n >= 1e9) return `${(n / 1e9).toFixed(2)}G`;
-    if (n >= 1e6) return `${(n / 1e6).toFixed(2)}M`;
-    if (n >= 1e3) return `${(n / 1e3).toFixed(1)}K`;
-    return n.toString();
-}
+    const els = {
+        workerStatus:    $('workerStatus'),
+        statusDot:       $('statusDot'),
+        statusText:      $('statusText'),
+        refreshBadge:    $('refreshBadge'),
+        refreshCountdown: $('refreshCountdown'),
+        kpiHashrate:     $('kpiHashrate'),
+        kpiHashrateSub:  $('kpiHashrateSub'),
+        kpiAccepted:     $('kpiAccepted'),
+        kpiAcceptedSub:  $('kpiAcceptedSub'),
+        kpiRejected:     $('kpiRejected'),
+        kpiRejectedSub:  $('kpiRejectedSub'),
+        kpiEfficiency:   $('kpiEfficiency'),
+        kpiEfficiencySub: $('kpiEfficiencySub'),
+        sideUptime:      $('sideUptime'),
+        sideTotalHashes: $('sideTotalHashes'),
+        sideDifficulty:  $('sideDifficulty'),
+        sideLastUpdate:  $('sideLastUpdate'),
+        workerPool:      $('workerPool'),
+        workerName:      $('workerName'),
+        workerWallet:    $('workerWallet'),
+        dataSource:      $('dataSource'),
+        demoToggle:      $('demoModeToggle'),
+    };
 
-function formatUptime(secs) {
-    const h = Math.floor(secs / 3600);
-    const m = Math.floor((secs % 3600) / 60);
-    const s = Math.floor(secs % 60);
-    return `${String(h).padStart(2,'0')}:${String(m).padStart(2,'0')}:${String(s).padStart(2,'0')}`;
-}
+    /* ================================================================
+       Demo Mode Toggle
+    ================================================================ */
+    els.demoToggle.addEventListener('change', function () {
+        demoMode = this.checked;
+        if (demoMode) {
+            // Reset demo state
+            Object.assign(demo, {
+                hashrate: 0, accepted: 0, rejected: 0,
+                totalHashes: 0, uptime: 0,
+                startTime: Date.now(),
+            });
+            prevAccepted = 0;
+            prevRejected = 0;
+            clearCharts();
+            els.dataSource.textContent = 'Demo (simulated)';
+        } else {
+            els.dataSource.textContent = 'REST API';
+        }
+        refresh();
+    });
 
-function formatTime(ts) {
-    return new Date(ts).toLocaleTimeString('ru-RU', { hour: '2-digit', minute: '2-digit', second: '2-digit' });
-}
-
-function setOnline(online) {
-    if (isOnline === online) return;
-    isOnline = online;
-    const dot = document.getElementById('statusDot');
-    const txt = document.getElementById('statusText');
-    dot.className = `status-dot ${online ? 'online' : 'offline'}`;
-    txt.textContent = online ? 'Online' : 'Offline';
-}
-
-function updateUI(stats) {
-    if (!stats) {
-        setOnline(false);
-        return;
-    }
-
-    setOnline(true);
-
-    // Hashrate
-    const hr = formatHashrate(stats.hashrate || 0);
-    document.getElementById('hashrate').textContent = hr.value;
-    document.getElementById('hashrateUnit').textContent = hr.unit;
-
-    // Shares
-    document.getElementById('accepted').textContent = stats.accepted || 0;
-    document.getElementById('rejected').textContent = stats.rejected || 0;
-
-    // Efficiency
-    const eff = parseFloat(stats.efficiency || 0);
-    document.getElementById('efficiency').textContent = eff.toFixed(1);
-
-    // Secondary
-    document.getElementById('totalHashes').textContent = formatNumber(stats.total_hashes || 0);
-    document.getElementById('uptime').textContent = formatUptime(stats.uptime_seconds || 0);
-    document.getElementById('difficulty').textContent = stats.difficulty ? formatNumber(stats.difficulty) : '—';
-    document.getElementById('lastUpdate').textContent = stats.timestamp ? formatTime(stats.timestamp) : '—';
-
-    // Demo badge
-    const demoBadge = document.getElementById('demoMode');
-    demoBadge.className = stats.demo ? 'demo-badge' : 'demo-badge hidden';
-
-    // Update chart history
-    const label = new Date().toLocaleTimeString('ru-RU', { hour: '2-digit', minute: '2-digit' });
-
-    historyLabels.push(label);
-    hashrateHistory.push(stats.hashrate || 0);
-
-    const newAccepted = (stats.accepted || 0) - prevAccepted;
-    const newRejected = (stats.rejected || 0) - prevRejected;
-    acceptedHistory.push(Math.max(0, newAccepted));
-    rejectedHistory.push(Math.max(0, newRejected));
-    efficiencyHistory.push(eff);
-
-    prevAccepted = stats.accepted || 0;
-    prevRejected = stats.rejected || 0;
-
-    // Keep max history
-    if (historyLabels.length > MAX_HISTORY) {
-        historyLabels.shift();
-        hashrateHistory.shift();
-        acceptedHistory.shift();
-        rejectedHistory.shift();
-        efficiencyHistory.shift();
+    /* ================================================================
+       Main refresh loop
+    ================================================================ */
+    function startRefreshLoop() {
+        refresh();
+        refreshTimer = setInterval(refresh, REFRESH_INTERVAL);
+        startCountdown();
     }
 
-    // Update charts
-    hashrateChart.data.labels = [...historyLabels];
-    hashrateChart.data.datasets[0].data = [...hashrateHistory];
-    hashrateChart.update('none');
+    function startCountdown() {
+        countdownValue = REFRESH_INTERVAL / 1000;
+        updateCountdown();
+        countdownTimer = setInterval(() => {
+            countdownValue--;
+            if (countdownValue <= 0) countdownValue = REFRESH_INTERVAL / 1000;
+            updateCountdown();
+        }, 1000);
+    }
 
-    sharesChart.data.labels = [...historyLabels];
-    sharesChart.data.datasets[0].data = [...acceptedHistory];
-    sharesChart.data.datasets[1].data = [...rejectedHistory];
-    sharesChart.update('none');
+    function updateCountdown() {
+        els.refreshCountdown.textContent = countdownValue + 's';
+    }
 
-    efficiencyChart.data.labels = [...historyLabels];
-    efficiencyChart.data.datasets[0].data = [...efficiencyHistory];
-    efficiencyChart.update('none');
-}
+    async function refresh() {
+        // Flash refresh badge
+        els.refreshBadge.classList.add('refreshing');
+        setTimeout(() => els.refreshBadge.classList.remove('refreshing'), 500);
 
-function startCountdown() {
-    countdown = REFRESH_INTERVAL / 1000;
-    const el = document.getElementById('countdown');
-    el.textContent = countdown;
+        if (demoMode) {
+            updateWithDemoData();
+        } else {
+            await fetchAndUpdate();
+        }
+    }
 
-    const timer = setInterval(() => {
-        countdown--;
-        el.textContent = Math.max(0, countdown);
-        if (countdown <= 0) clearInterval(timer);
-    }, 1000);
-}
+    /* ================================================================
+       API fetch
+    ================================================================ */
+    async function fetchAndUpdate() {
+        try {
+            const response = await fetch(API_URL, {
+                method: 'GET',
+                headers: { 'Accept': 'application/json' },
+                signal: AbortSignal.timeout(4000),
+            });
 
-async function refresh() {
-    const stats = await fetchStats();
-    updateUI(stats);
-    startCountdown();
-}
+            if (!response.ok) throw new Error('HTTP ' + response.status);
 
-function init() {
-    hashrateChart = initHashrateChart();
-    sharesChart = initSharesChart();
-    efficiencyChart = initEfficiencyChart();
+            const data = await response.json();
+            setOnlineStatus(true);
+            updateUI(data);
+            els.dataSource.textContent = 'REST API ✓';
 
-    refresh();
-    setInterval(refresh, REFRESH_INTERVAL);
-}
+        } catch (err) {
+            console.warn('[Dashboard] API fetch failed:', err.message);
+            setOnlineStatus(false);
+            els.dataSource.textContent = 'API offline — enable Demo Mode';
+        }
+    }
 
-document.addEventListener('DOMContentLoaded', init);
+    /* ================================================================
+       Demo data generator
+    ================================================================ */
+    function updateWithDemoData() {
+        const elapsed = (Date.now() - demo.startTime) / 1000;
+        demo.uptime = Math.floor(elapsed);
+
+        // Simulate hashrate with realistic fluctuation
+        const noise = (Math.random() - 0.5) * 2 * demo.variance;
+        const trend = Math.sin(elapsed / 60) * 40; // gentle sine wave
+        demo.hashrate = Math.max(50, demo.baseHashrate + trend + noise);
+
+        // Increment total hashes
+        demo.totalHashes += Math.floor(demo.hashrate * (REFRESH_INTERVAL / 1000));
+
+        // Occasionally find a share (roughly every 15-30s)
+        if (Math.random() < 0.25) {
+            demo.accepted++;
+            if (Math.random() < 0.04) { // ~4% rejection rate
+                demo.rejected++;
+            }
+        }
+
+        setOnlineStatus(true);
+        updateUI({
+            hashrate:      demo.hashrate,
+            accepted:      demo.accepted,
+            rejected:      demo.rejected,
+            total_hashes:  demo.totalHashes,
+            uptime_seconds: demo.uptime,
+            difficulty:    demo.difficulty,
+            timestamp:     Date.now(),
+            worker:        'demo-worker1',
+            wallet:        '4...demo...wallet',
+            pool:          'pool.supportxmr.com:3333',
+        });
+    }
+
+    /* ================================================================
+       UI update
+    ================================================================ */
+    function updateUI(data) {
+        const hashrate    = parseFloat(data.hashrate)      || 0;
+        const accepted    = parseInt(data.accepted)        || 0;
+        const rejected    = parseInt(data.rejected)        || 0;
+        const totalHashes = parseInt(data.total_hashes)    || 0;
+        const uptime      = parseInt(data.uptime_seconds)  || 0;
+        const difficulty  = parseFloat(data.difficulty)    || 0;
+
+        const total      = accepted + rejected;
+        const efficiency = total > 0 ? ((accepted / total) * 100).toFixed(1) : '0.0';
+        const rejectRate = total > 0 ? ((rejected / total) * 100).toFixed(1) : '0.0';
+
+        // KPIs
+        flashUpdate(els.kpiHashrate,   formatHashrate(hashrate));
+        els.kpiHashrateSub.textContent = hashrate > 0 ? 'Active mining' : 'Idle';
+
+        flashUpdate(els.kpiAccepted,   accepted.toString());
+        els.kpiAcceptedSub.textContent = accepted > 0 ? 'Last: just now' : 'No shares yet';
+
+        flashUpdate(els.kpiRejected,   rejected.toString());
+        els.kpiRejectedSub.textContent = 'Error rate: ' + rejectRate + '%';
+
+        flashUpdate(els.kpiEfficiency, efficiency + '%');
+        els.kpiEfficiencySub.textContent = accepted + ' / ' + total + ' shares';
+
+        // Side panel
+        els.sideUptime.textContent      = formatUptime(uptime);
+        els.sideTotalHashes.textContent = formatNumber(totalHashes);
+        els.sideDifficulty.textContent  = difficulty > 0 ? formatNumber(difficulty) : '--';
+        els.sideLastUpdate.textContent  = new Date().toLocaleTimeString();
+
+        // Worker info
+        if (data.pool)   els.workerPool.textContent   = data.pool;
+        if (data.worker) els.workerName.textContent   = data.worker;
+        if (data.wallet) els.workerWallet.textContent = truncateWallet(data.wallet);
+
+        // Charts
+        const timeLabel = new Date().toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', hour12: false });
+        pushHashratePoint(timeLabel, hashrate);
+
+        const deltaAccepted = accepted - prevAccepted;
+        const deltaRejected = rejected - prevRejected;
+        pushSharesPoint(timeLabel, Math.max(0, deltaAccepted), Math.max(0, deltaRejected));
+        prevAccepted = accepted;
+        prevRejected = rejected;
+    }
+
+    /* ================================================================
+       Status indicator
+    ================================================================ */
+    function setOnlineStatus(online) {
+        isOnline = online;
+        if (online) {
+            els.workerStatus.classList.add('online');
+            els.statusText.textContent = 'Online';
+        } else {
+            els.workerStatus.classList.remove('online');
+            els.statusText.textContent = 'Offline';
+        }
+    }
+
+    /* ================================================================
+       Helpers
+    ================================================================ */
+    function formatHashrate(hps) {
+        if (hps >= 1e6) return (hps / 1e6).toFixed(2) + ' MH/s';
+        if (hps >= 1e3) return (hps / 1e3).toFixed(2) + ' KH/s';
+        return hps.toFixed(2) + ' H/s';
+    }
+
+    function formatNumber(n) {
+        if (n >= 1e9) return (n / 1e9).toFixed(2) + 'G';
+        if (n >= 1e6) return (n / 1e6).toFixed(2) + 'M';
+        if (n >= 1e3) return (n / 1e3).toFixed(2) + 'K';
+        return n.toString();
+    }
+
+    function formatUptime(secs) {
+        const h = Math.floor(secs / 3600);
+        const m = Math.floor((secs % 3600) / 60);
+        const s = secs % 60;
+        return [h, m, s].map(v => String(v).padStart(2, '0')).join(':');
+    }
+
+    function truncateWallet(w) {
+        if (!w || w.length < 10) return w;
+        return w.slice(0, 8) + '...' + w.slice(-6);
+    }
+
+    // Flash an element when its value changes
+    function flashUpdate(el, newValue) {
+        if (el.textContent !== newValue) {
+            el.textContent = newValue;
+            el.classList.remove('flash');
+            // Force reflow then re-add class
+            void el.offsetWidth;
+            el.classList.add('flash');
+        }
+    }
+
+    /* ================================================================
+       Boot
+    ================================================================ */
+    // Default to demo mode if API is likely not available (detected later)
+    els.dataSource.textContent = 'REST API';
+    startRefreshLoop();
+
+})();
