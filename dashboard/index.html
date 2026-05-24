@@ -1,0 +1,193 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>XMR Mining Dashboard</title>
+    <link rel="stylesheet" href="css/dashboard.css" />
+    <!-- Chart.js CDN -->
+    <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
+</head>
+<body>
+    <!-- Top Nav -->
+    <header class="header">
+        <div class="header-inner">
+            <div class="logo">
+                <svg class="logo-icon" viewBox="0 0 40 40" fill="none" xmlns="http://www.w3.org/2000/svg">
+                    <circle cx="20" cy="20" r="19" stroke="#FF6D00" stroke-width="2"/>
+                    <path d="M10 28 L20 12 L30 28" stroke="#FF6D00" stroke-width="2.5" stroke-linejoin="round"/>
+                    <path d="M14 22 L20 12 L26 22" fill="#FF6D00" opacity="0.3"/>
+                </svg>
+                <span class="logo-text">XMR<span class="logo-accent">Miner</span></span>
+            </div>
+            <div class="header-actions">
+                <div class="worker-status" id="workerStatus">
+                    <span class="status-dot" id="statusDot"></span>
+                    <span id="statusText">Offline</span>
+                </div>
+                <div class="refresh-badge" id="refreshBadge">
+                    <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
+                        <polyline points="23 4 23 10 17 10"></polyline>
+                        <path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"></path>
+                    </svg>
+                    <span id="refreshCountdown">5s</span>
+                </div>
+            </div>
+        </div>
+    </header>
+
+    <main class="main">
+
+        <!-- Top KPI Cards -->
+        <section class="kpi-grid">
+
+            <div class="kpi-card kpi-hashrate">
+                <div class="kpi-label">Current Hashrate</div>
+                <div class="kpi-value" id="kpiHashrate">0.00 H/s</div>
+                <div class="kpi-sub" id="kpiHashrateSub">--</div>
+            </div>
+
+            <div class="kpi-card kpi-accepted">
+                <div class="kpi-label">Accepted Shares</div>
+                <div class="kpi-value accepted-val" id="kpiAccepted">0</div>
+                <div class="kpi-sub" id="kpiAcceptedSub">Last share: --</div>
+            </div>
+
+            <div class="kpi-card kpi-rejected">
+                <div class="kpi-label">Rejected Shares</div>
+                <div class="kpi-value rejected-val" id="kpiRejected">0</div>
+                <div class="kpi-sub" id="kpiRejectedSub">Error rate: 0%</div>
+            </div>
+
+            <div class="kpi-card kpi-efficiency">
+                <div class="kpi-label">Efficiency</div>
+                <div class="kpi-value" id="kpiEfficiency">0%</div>
+                <div class="kpi-sub" id="kpiEfficiencySub">shares accepted/total</div>
+            </div>
+
+        </section>
+
+        <!-- Chart + Secondary Stats -->
+        <section class="middle-section">
+
+            <!-- Hashrate Chart -->
+            <div class="chart-card">
+                <div class="card-header">
+                    <h2 class="card-title">Hashrate History</h2>
+                    <div class="chart-legend">
+                        <span class="legend-dot legend-hashrate"></span>
+                        <span class="legend-label">H/s (60 min)</span>
+                    </div>
+                </div>
+                <div class="chart-container">
+                    <canvas id="hashrateChart"></canvas>
+                </div>
+            </div>
+
+            <!-- Right panel: uptime + total hashes + difficulty -->
+            <div class="side-panel">
+
+                <div class="side-card">
+                    <div class="side-icon">&#9202;</div>
+                    <div class="side-info">
+                        <div class="side-label">Uptime</div>
+                        <div class="side-value" id="sideUptime">00:00:00</div>
+                    </div>
+                </div>
+
+                <div class="side-card">
+                    <div class="side-icon">#</div>
+                    <div class="side-info">
+                        <div class="side-label">Total Hashes</div>
+                        <div class="side-value" id="sideTotalHashes">0</div>
+                    </div>
+                </div>
+
+                <div class="side-card">
+                    <div class="side-icon">&#9654;</div>
+                    <div class="side-info">
+                        <div class="side-label">Difficulty</div>
+                        <div class="side-value" id="sideDifficulty">--</div>
+                    </div>
+                </div>
+
+                <div class="side-card">
+                    <div class="side-icon">&#128337;</div>
+                    <div class="side-info">
+                        <div class="side-label">Last Update</div>
+                        <div class="side-value side-value-sm" id="sideLastUpdate">--</div>
+                    </div>
+                </div>
+
+            </div>
+
+        </section>
+
+        <!-- Shares Breakdown Chart -->
+        <section class="bottom-section">
+
+            <div class="shares-chart-card">
+                <div class="card-header">
+                    <h2 class="card-title">Shares Over Time</h2>
+                    <div class="chart-legend">
+                        <span class="legend-dot legend-accepted"></span>
+                        <span class="legend-label">Accepted</span>
+                        <span class="legend-dot legend-rejected"></span>
+                        <span class="legend-label">Rejected</span>
+                    </div>
+                </div>
+                <div class="chart-container chart-container-sm">
+                    <canvas id="sharesChart"></canvas>
+                </div>
+            </div>
+
+            <!-- Worker info / connection details -->
+            <div class="worker-card">
+                <div class="card-header">
+                    <h2 class="card-title">Worker Info</h2>
+                </div>
+                <div class="worker-details">
+                    <div class="worker-row">
+                        <span class="worker-label">Pool</span>
+                        <span class="worker-value" id="workerPool">pool.supportxmr.com:3333</span>
+                    </div>
+                    <div class="worker-row">
+                        <span class="worker-label">Worker</span>
+                        <span class="worker-value" id="workerName">--</span>
+                    </div>
+                    <div class="worker-row">
+                        <span class="worker-label">Wallet</span>
+                        <span class="worker-value worker-wallet" id="workerWallet">--</span>
+                    </div>
+                    <div class="worker-row">
+                        <span class="worker-label">Data Source</span>
+                        <span class="worker-value" id="dataSource">REST API / Mock</span>
+                    </div>
+                </div>
+
+                <!-- Demo mode toggle -->
+                <div class="demo-toggle">
+                    <label class="toggle-label">
+                        <input type="checkbox" id="demoModeToggle" />
+                        <span class="toggle-track">
+                            <span class="toggle-thumb"></span>
+                        </span>
+                        <span>Demo Mode</span>
+                    </label>
+                    <p class="demo-hint">Generates simulated live data when no miner is connected.</p>
+                </div>
+            </div>
+
+        </section>
+
+    </main>
+
+    <footer class="footer">
+        <span>XMR Miner Dashboard &mdash; Monero CPU Mining via Stratum Protocol</span>
+        <span>Auto-refresh every 5 seconds</span>
+    </footer>
+
+    <script src="js/charts.js"></script>
+    <script src="js/dashboard.js"></script>
+</body>
+</html>

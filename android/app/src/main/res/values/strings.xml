@@ -1,0 +1,25 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">XMR Miner</string>
+    <string name="start_mining">START MINING</string>
+    <string name="stop_mining">STOP MINING</string>
+    <string name="hint_wallet">XMR Wallet Address</string>
+    <string name="hint_worker">Worker Name</string>
+    <string name="notification_channel_name">Mining Service</string>
+    <string name="notification_channel_desc">Shows mining status and hashrate</string>
+    <!-- Additional UI strings -->
+    <string name="wallet_address_label">WALLET ADDRESS</string>
+    <string name="wallet_hint">Enter your Monero (XMR) wallet address</string>
+    <string name="worker_hint">worker1</string>
+    <string name="pool_settings_label">POOL SETTINGS</string>
+    <string name="pool_host_hint">pool.supportxmr.com</string>
+    <string name="pool_port_hint">3333</string>
+    <string name="live_stats_label">LIVE STATISTICS</string>
+    <string name="status_idle">Idle — press START to begin mining</string>
+    <string name="accepted_label">Accepted</string>
+    <string name="rejected_label">Rejected</string>
+    <string name="efficiency_label">Efficiency</string>
+    <string name="uptime_label">Uptime</string>
+    <string name="total_hashes_label">Total Hashes</string>
+    <string name="footer_text">XMR Miner · Stratum Protocol · CPU Mining</string>
+</resources>
