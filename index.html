@@ -49,11 +49,34 @@
     </div>
     <h4>text</h4>
 </section>
+<section class="quadrilateral">
+    <div class="container">
+        <h2 class="quadrilateral_title">Вписанный четырёхугольник</h2>
+        <p class="quadrilateral_text">Сумма противоположных углов вписанного четырёхугольника равна 180°.</p>
+        <div class="quadrilateral_calc">
+            <label for="angleInput">Известный угол (°):</label>
+            <input type="number" id="angleInput" min="1" max="179" placeholder="Введите угол">
+            <button onclick="calcOppositeAngle()">Найти</button>
+            <p id="angleResult"></p>
+        </div>
+    </div>
+</section>
 </main>
 <footer>
     <div class="container container footer">
 <p>glurpik</p>
     </div>
 </footer>
+<script>
+function calcOppositeAngle() {
+    var input = parseFloat(document.getElementById('angleInput').value);
+    var result = document.getElementById('angleResult');
+    if (isNaN(input) || input <= 0 || input >= 180) {
+        result.textContent = 'Введите угол от 1 до 179 градусов.';
+    } else {
+        result.textContent = 'Противоположный угол: ' + (180 - input) + '°';
+    }
+}
+</script>
 </body>
 </html>
